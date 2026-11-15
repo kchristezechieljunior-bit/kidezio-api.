@@ -26,13 +26,9 @@ export default {
         const { pseudo, password } = await request.json();
         const checkUser = await env.DB.prepare("SELECT id FROM users WHERE pseudo = ?").bind(pseudo).first();
         if (checkUser) throw new Error("Ce pseudo est déjà pris.");
-        
         const userId = crypto.randomUUID();
         const inviteCode = 'KID-' + Math.random().toString(36).substring(2, 8).toUpperCase();
-        
-        await env.DB.prepare("INSERT INTO users (id, pseudo, email, password_hash, invite_code) VALUES (?, ?, ?, ?, ?)")
-          .bind(userId, pseudo, pseudo + "@kidezio.local", password, inviteCode).run();
-          
+        await env.DB.prepare("INSERT INTO users (id, pseudo, email, password_hash, invite_code) VALUES (?, ?, ?, ?, ?)").bind(userId, pseudo, pseudo + "@kidezio.local", password, inviteCode).run();
         return jsonResponse({ success: true, userId, pseudo, inviteCode });
       }
 
@@ -60,19 +56,14 @@ export default {
         return jsonResponse({ success: true, videos: results });
       }
 
-      // ✅ CORRECTION : Mise à la corbeille (Soft Delete)
       if (path === "/api/video/delete" && request.method === "POST") {
         const { videoId, userId } = await request.json();
         const video = await env.DB.prepare("SELECT * FROM videos WHERE id = ? AND user_id = ?").bind(videoId, userId).first();
         if (!video) throw new Error("Non autorisé.");
-        
-        // On met juste la date de suppression, on ne supprime pas de la base
         await env.DB.prepare("UPDATE videos SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?").bind(videoId).run();
-        
         return jsonResponse({ success: true });
       }
       
-      // ✅ Restauration de la vidéo depuis la corbeille
       if (path === "/api/video/restore" && request.method === "POST") {
         const { videoId } = await request.json();
         await env.DB.prepare("UPDATE videos SET deleted_at = NULL WHERE id = ?").bind(videoId).run();
@@ -87,9 +78,17 @@ export default {
         return jsonResponse({ success: true, user });
       }
 
+      // ✅ MISE À JOUR DU PROFIL (Anniversaire inclus)
       if (path === "/api/user/update" && request.method === "POST") {
-        const { userId, bio, name, avatar_url, birthday } = await request.json();
-        await env.DB.prepare("UPDATE users SET bio = ?, name = ?, avatar_url = ?, birthday = ? WHERE id = ?").bind(bio, name, avatar_url, birthday, userId).run();
+        const { userId, bio, name, avatar_url, birthday, last_birthday_update } = await request.json();
+        
+        if (birthday && last_birthday_update) {
+          await env.DB.prepare("UPDATE users SET bio = ?, name = ?, avatar_url = ?, birthday = ?, last_birthday_update = ? WHERE id = ?")
+            .bind(bio, name, avatar_url, birthday, last_birthday_update, userId).run();
+        } else {
+          await env.DB.prepare("UPDATE users SET bio = ?, name = ?, avatar_url = ? WHERE id = ?")
+            .bind(bio, name, avatar_url, userId).run();
+        }
         return jsonResponse({ success: true });
       }
       
@@ -119,7 +118,6 @@ export default {
       }
       if (path.startsWith("/api/user/") && path.includes("/trash")) {
         const userId = path.split("/")[3];
-        // On récupère uniquement les vidéos qui ont une date de suppression
         const { results } = await env.DB.prepare(`SELECT v.*, (SELECT COUNT(*) FROM likes WHERE video_id = v.id) as likes_count, (SELECT COUNT(*) FROM comments WHERE video_id = v.id) as comments_count, (SELECT COUNT(*) FROM views WHERE video_id = v.id) as views_count FROM videos v WHERE v.user_id = ? AND v.deleted_at IS NOT NULL ORDER BY v.deleted_at DESC`).bind(userId).all();
         return jsonResponse({ success: true, videos: results });
       }
@@ -237,7 +235,8 @@ export default {
         await env.BUCKET.put(fileName, file.stream(), { httpMetadata: { contentType: file.type } });
         
         // ⚠️ METS TON URL R2 ICI
-        const publicUrl = `https://pub-3219a17171b24ba58cf1972fa7300c60.r2.dev/${fileName}`;
+        const publicUrl = `https://pub-3219a17171b24ba58cf1972fa7300c60.r2.dev
+      /${fileName}`;
         
         await env.DB.prepare("UPDATE users SET avatar_url = ? WHERE id = ?").bind(publicUrl, userId).run();
         return jsonResponse({ success: true, url: publicUrl });

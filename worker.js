@@ -13,29 +13,41 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
 
+    const jsonResponse = (data, status = 200) => {
+      return new Response(JSON.stringify(data), {
+        status,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    };
+
     try {
-      // --- INSCRIPTION ---
+      // ==========================================
+      // AUTHENTIFICATION
+      // ==========================================
       if (path === "/api/auth/signup" && request.method === "POST") {
-        const body = await request.json();
-        const { pseudo, password } = body;
+        const { pseudo, password } = await request.json();
         const checkUser = await env.DB.prepare("SELECT id FROM users WHERE pseudo = ?").bind(pseudo).first();
         if (checkUser) throw new Error("Ce pseudo est déjà pris.");
+        
         const userId = crypto.randomUUID();
         const inviteCode = 'KID-' + Math.random().toString(36).substring(2, 8).toUpperCase();
-        await env.DB.prepare("INSERT INTO users (id, pseudo, email, password_hash, invite_code) VALUES (?, ?, ?, ?, ?)").bind(userId, pseudo, pseudo + "@kidezio.local", password, inviteCode).run();
-        return new Response(JSON.stringify({ success: true, userId, pseudo, inviteCode }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        
+        await env.DB.prepare("INSERT INTO users (id, pseudo, email, password_hash, invite_code) VALUES (?, ?, ?, ?, ?)")
+          .bind(userId, pseudo, pseudo + "@kidezio.local", password, inviteCode).run();
+          
+        return jsonResponse({ success: true, userId, pseudo, inviteCode });
       }
 
-      // --- CONNEXION ---
       if (path === "/api/auth/login" && request.method === "POST") {
-        const body = await request.json();
-        const { pseudo, password } = body;
+        const { pseudo, password } = await request.json();
         const user = await env.DB.prepare("SELECT * FROM users WHERE pseudo = ? AND password_hash = ?").bind(pseudo, password).first();
         if (!user) throw new Error("Pseudo ou mot de passe incorrect.");
-        return new Response(JSON.stringify({ success: true, user }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        return jsonResponse({ success: true, user });
       }
 
-      // --- FEED (VIDÉOS) ---
+      // ==========================================
+      // FEED & VIDÉOS
+      // ==========================================
       if (path === "/api/videos" && request.method === "GET") {
         const userId = url.searchParams.get('userId');
         const { results } = await env.DB.prepare(`
@@ -43,67 +55,120 @@ export default {
                  (SELECT COUNT(*) FROM likes WHERE video_id = v.id) as likes_count,
                  (SELECT COUNT(*) FROM comments WHERE video_id = v.id) as comments_count,
                  (SELECT COUNT(*) FROM views WHERE video_id = v.id) as views_count,
-                 (SELECT COUNT(*) FROM likes WHERE video_id = v.id AND user_id = ?) as is_liked
+                 (SELECT COUNT(*) FROM likes WHERE video_id = v.id AND user_id = ?) as is_liked,
+                 (SELECT COUNT(*) FROM reposts WHERE video_id = v.id) as reposts_count
           FROM videos v JOIN users u ON v.user_id = u.id
           WHERE v.deleted_at IS NULL ORDER BY v.created_at DESC LIMIT 50
         `).bind(userId).all();
-        return new Response(JSON.stringify({ success: true, videos: results }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        return jsonResponse({ success: true, videos: results });
       }
 
-      // --- VIDÉOS D'UN UTILISATEUR (PROFIL) ---
+      if (path === "/api/video/delete" && request.method === "POST") {
+        const { videoId, userId } = await request.json();
+        const video = await env.DB.prepare("SELECT * FROM videos WHERE id = ? AND user_id = ?").bind(videoId, userId).first();
+        if (!video) throw new Error("Non autorisé.");
+        try {
+          const key = video.video_url.split('.r2.dev/')[1];
+          if (key) await env.BUCKET.delete(key);
+        } catch (e) {}
+        await env.DB.prepare("DELETE FROM videos WHERE id = ?").bind(videoId).run();
+        return jsonResponse({ success: true });
+      }
+
+      // ==========================================
+      // PROFIL & UTILISATEURS
+      // ==========================================
+      if (path.startsWith("/api/user/") && request.method === "GET" && !path.includes("/videos")) {
+        const userId = path.split("/")[3];
+        const user = await env.DB.prepare("SELECT id, pseudo, name, bio, avatar_url, invite_code, birthday FROM users WHERE id = ?").bind(userId).first();
+        return jsonResponse({ success: true, user });
+      }
+
+      if (path === "/api/user/update" && request.method === "POST") {
+        const { userId, bio, name, avatar_url } = await request.json();
+        await env.DB.prepare("UPDATE users SET bio = ?, name = ?, avatar_url = ? WHERE id = ?").bind(bio, name, avatar_url, userId).run();
+        return jsonResponse({ success: true });
+      }
+
       if (path.startsWith("/api/user/") && path.endsWith("/videos") && request.method === "GET") {
         const userId = path.split("/")[3]; 
         const { results } = await env.DB.prepare(`
           SELECT v.*, (SELECT COUNT(*) FROM likes WHERE video_id = v.id) as likes_count, (SELECT COUNT(*) FROM comments WHERE video_id = v.id) as comments_count, (SELECT COUNT(*) FROM views WHERE video_id = v.id) as views_count
           FROM videos v WHERE v.user_id = ? AND v.deleted_at IS NULL ORDER BY v.created_at DESC
         `).bind(userId).all();
-        return new Response(JSON.stringify({ success: true, videos: results }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        return jsonResponse({ success: true, videos: results });
       }
 
-      // --- INFO UTILISATEUR ---
-      if (path.startsWith("/api/user/") && request.method === "GET") {
-        const userId = path.split("/")[3];
-        const user = await env.DB.prepare("SELECT id, pseudo, bio, avatar_url, invite_code FROM users WHERE id = ?").bind(userId).first();
-        return new Response(JSON.stringify({ success: true, user }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
-
-      // --- LIKES ---
+      // ==========================================
+      // LIKES, VUES, COMMENTS
+      // ==========================================
       if (path === "/api/like" && request.method === "POST") {
         const { userId, videoId } = await request.json();
         const existing = await env.DB.prepare("SELECT id FROM likes WHERE user_id = ? AND video_id = ?").bind(userId, videoId).first();
         if (existing) {
           await env.DB.prepare("DELETE FROM likes WHERE id = ?").bind(existing.id).run();
-          return new Response(JSON.stringify({ success: true, action: "unliked" }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+          return jsonResponse({ success: true, action: "unliked" });
         } else {
           await env.DB.prepare("INSERT INTO likes (id, user_id, video_id) VALUES (?, ?, ?)").bind(crypto.randomUUID(), userId, videoId).run();
-          return new Response(JSON.stringify({ success: true, action: "liked" }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+          return jsonResponse({ success: true, action: "liked" });
         }
       }
 
-      // --- VUES ---
       if (path === "/api/view" && request.method === "POST") {
         const { userId, videoId } = await request.json();
         await env.DB.prepare("INSERT INTO views (id, user_id, video_id) VALUES (?, ?, ?) ON CONFLICT(user_id, video_id) DO NOTHING").bind(crypto.randomUUID(), userId, videoId).run();
-        return new Response(JSON.stringify({ success: true }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        return jsonResponse({ success: true });
       }
 
-      // --- VOIR LES COMMENTAIRES ---
       if (path.startsWith("/api/comments/") && request.method === "GET") {
         const videoId = path.split("/")[3];
-        const { results } = await env.DB.prepare(`
-          SELECT c.*, u.pseudo, u.avatar_url FROM comments c JOIN users u ON c.user_id = u.id WHERE c.video_id = ? ORDER BY c.created_at ASC
-        `).bind(videoId).all();
-        return new Response(JSON.stringify({ success: true, comments: results }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        const { results } = await env.DB.prepare(`SELECT c.*, u.pseudo, u.avatar_url FROM comments c JOIN users u ON c.user_id = u.id WHERE c.video_id = ? ORDER BY c.created_at ASC`).bind(videoId).all();
+        return jsonResponse({ success: true, comments: results });
       }
 
-      // --- POSTER UN COMMENTAIRE ---
       if (path === "/api/comments" && request.method === "POST") {
         const { videoId, userId, text } = await request.json();
         await env.DB.prepare("INSERT INTO comments (id, video_id, user_id, text) VALUES (?, ?, ?, ?)").bind(crypto.randomUUID(), videoId, userId, text).run();
-        return new Response(JSON.stringify({ success: true }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        return jsonResponse({ success: true });
       }
 
-      // --- UPLOAD VIDÉO ---
+      // ==========================================
+      // CHAT & MESSAGES
+      // ==========================================
+      if (path.startsWith("/api/messages/") && request.method === "GET") {
+        const otherId = path.split("/")[3];
+        const myId = url.searchParams.get('myId');
+        const { results } = await env.DB.prepare(`
+          SELECT * FROM messages 
+          WHERE (sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?)
+          ORDER BY created_at ASC LIMIT 50
+        `).bind(myId, otherId, otherId, myId).all();
+        return jsonResponse({ success: true, messages: results });
+      }
+
+      if (path === "/api/messages" && request.method === "POST") {
+        const { sender_id, receiver_id, content } = await request.json();
+        await env.DB.prepare("INSERT INTO messages (id, sender_id, receiver_id, content) VALUES (?, ?, ?, ?)").bind(crypto.randomUUID(), sender_id, receiver_id, content).run();
+        return jsonResponse({ success: true });
+      }
+
+      // ==========================================
+      // RECHERCHE
+      // ==========================================
+      if (path === "/api/search" && request.method === "GET") {
+        const query = url.searchParams.get('q');
+        const { results } = await env.DB.prepare(`
+          SELECT v.*, u.pseudo, u.avatar_url 
+          FROM videos v JOIN users u ON v.user_id = u.id
+          WHERE v.description LIKE ? OR u.pseudo LIKE ?
+          LIMIT 20
+        `).bind('%' + query + '%', '%' + query + '%').all();
+        return jsonResponse({ success: true, videos: results });
+      }
+
+      // ==========================================
+      // UPLOAD
+      // ==========================================
       if (path === "/api/upload" && request.method === "POST") {
         const formData = await request.formData();
         const file = formData.get("video");
@@ -119,13 +184,13 @@ export default {
 
         const videoId = crypto.randomUUID();
         await env.DB.prepare("INSERT INTO videos (id, user_id, video_url, description, music) VALUES (?, ?, ?, ?, ?)").bind(videoId, userId, publicUrl, description, music).run();
-        return new Response(JSON.stringify({ success: true, videoId, url: publicUrl }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+        return jsonResponse({ success: true, videoId, url: publicUrl });
       }
 
-      return new Response(JSON.stringify({ error: "Route introuvable" }), { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      return jsonResponse({ error: "Route introuvable" }, 404);
 
     } catch (error) {
-      return new Response(JSON.stringify({ error: error.message }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      return jsonResponse({ error: error.message }, 400);
     }
   },
 };

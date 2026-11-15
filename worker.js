@@ -71,7 +71,7 @@ export default {
         try {
           const key = video.video_url.split('.r2.dev/')[1];
           if (key) await env.BUCKET.delete(key);
-        } catch (e) { console.error("Erreur supression R2", e); }
+        } catch (e) { console.error("Erreur suppression R2", e); }
         await env.DB.prepare("DELETE FROM videos WHERE id = ?").bind(videoId).run();
         return jsonResponse({ success: true });
       }
@@ -85,9 +85,11 @@ export default {
       // ==========================================
       // PROFIL & UTILISATEURS
       // ==========================================
-      if (path.startsWith("/api/user/") && request.method === "GET" && !path.includes("/videos") && !path.includes("/follow") && !path.includes("/reposts") && !path.includes("/favorites") && !path.includes("/likes") && !path.includes("/trash")) {
+      // Route spécifique pour l'utilisateur (Regex pour ne pas capturer /videos, etc.)
+      if (/^\/api\/user\/[a-zA-Z0-9-]+$/.test(path) && request.method === "GET") {
         const userId = path.split("/")[3];
         const user = await env.DB.prepare("SELECT id, pseudo, name, bio, avatar_url, invite_code, birthday FROM users WHERE id = ?").bind(userId).first();
+        if (!user) throw new Error("Utilisateur introuvable");
         return jsonResponse({ success: true, user });
       }
 
@@ -106,7 +108,6 @@ export default {
         return jsonResponse({ success: true, videos: results });
       }
 
-      // --- VIDÉOS DES ONGLETS (Reposts, Favoris, Likes, Corbeille) ---
       if (path.startsWith("/api/user/") && path.includes("/reposts")) {
         const userId = path.split("/")[3];
         const { results } = await env.DB.prepare(`SELECT v.*, (SELECT COUNT(*) FROM likes WHERE video_id = v.id) as likes_count, (SELECT COUNT(*) FROM comments WHERE video_id = v.id) as comments_count, (SELECT COUNT(*) FROM views WHERE video_id = v.id) as views_count FROM reposts r JOIN videos v ON r.video_id = v.id WHERE r.user_id = ? AND v.deleted_at IS NULL ORDER BY r.created_at DESC`).bind(userId).all();
@@ -142,7 +143,7 @@ export default {
         return jsonResponse({ success: true });
       }
       if (path.startsWith("/api/follows/") && request.method === "GET") {
-        const type = path.split("/")[3]; // 'followers' ou 'following'
+        const type = path.split("/")[3]; 
         const userId = path.split("/")[4];
         let query = type === 'followers' 
           ? `SELECT u.id, u.pseudo, u.avatar_url FROM follows f JOIN users u ON f.follower_id = u.id WHERE f.following_id = ?`
@@ -218,20 +219,8 @@ export default {
         return jsonResponse({ success: true });
       }
 
-      // --- CLASSEMENT MONDIAL ---
-if (path === "/api/leaderboard" && request.method === "GET") {
-  const { results } = await env.DB.prepare(`
-    SELECT u.id, u.pseudo, COUNT(f.id) as followers
-    FROM users u
-    LEFT JOIN follows f ON f.following_id = u.id
-    GROUP BY u.id, u.pseudo
-    ORDER BY followers DESC
-    LIMIT 100
-  `).all();
-  return jsonResponse({ success: true, leaderboard: results });
-}
       // ==========================================
-      // RECHERCHE & NOTIFICATIONS
+      // RECHERCHE, NOTIFICATIONS, CLASSEMENT
       // ==========================================
       if (path === "/api/search" && request.method === "GET") {
         const query = url.searchParams.get('q');
@@ -243,37 +232,40 @@ if (path === "/api/leaderboard" && request.method === "GET") {
         return jsonResponse({ success: true, notifs: [] });
       }
 
-      // --- UPLOAD AVATAR ---
-if (path === "/api/upload-avatar" && request.method === "POST") {
-  const formData = await request.formData();
-  const file = formData.get("avatar");
-  const userId = formData.get("userId");
-  const fileName = `avatars/${userId}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.]/g, '')}`;
-  
-  await env.BUCKET.put(fileName, file.stream(), { httpMetadata: { contentType: file.type } });
-  
-  // ⚠️ METS TON URL R2 ICI (ex: https://pub-abc123.r2.dev/)
-  const publicUrl = `https://pub-3219a17171b24ba58cf1972fa7300c60.r2.devq/${fileName}`;
-  
-  await env.DB.prepare("UPDATE users SET avatar_url = ? WHERE id = ?").bind(publicUrl, userId).run();
-  return jsonResponse({ success: true, url: publicUrl });
-}
+      if (path === "/api/leaderboard" && request.method === "GET") {
+        const { results } = await env.DB.prepare(`
+          SELECT u.id, u.pseudo, COUNT(f.id) as followers
+          FROM users u LEFT JOIN follows f ON f.following_id = u.id
+          GROUP BY u.id, u.pseudo ORDER BY followers DESC LIMIT 100
+        `).all();
+        return jsonResponse({ success: true, leaderboard: results });
+      }
+
       // ==========================================
-      // UPLOAD VIDÉO
+      // UPLOAD
       // ==========================================
+      if (path === "/api/upload-avatar" && request.method === "POST") {
+        const formData = await request.formData();
+        const file = formData.get("avatar");
+        const userId = formData.get("userId");
+        const fileName = `avatars/${userId}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.]/g, '')}`;
+        await env.BUCKET.put(fileName, file.stream(), { httpMetadata: { contentType: file.type } });
+        // ⚠️ METS TON URL R2 ICI
+        const publicUrl = `https://pub-3219a17171b24ba58cf1972fa7300c60.r2.devq/${fileName}`;
+        await env.DB.prepare("UPDATE users SET avatar_url = ? WHERE id = ?").bind(publicUrl, userId).run();
+        return jsonResponse({ success: true, url: publicUrl });
+      }
+
       if (path === "/api/upload" && request.method === "POST") {
         const formData = await request.formData();
         const file = formData.get("video");
         const description = formData.get("description") || "";
         const music = formData.get("music") || "Son original";
         const userId = formData.get("userId");
-
         const fileName = `videos/${userId}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.]/g, '')}`;
         await env.BUCKET.put(fileName, file.stream(), { httpMetadata: { contentType: file.type } });
-
-        // ⚠️ METS TON URL R2 ICI (Exemple: https://pub-abc123.r2.dev/)
-        const publicUrl = `https://pub-3219a17171b24ba58cf1972fa7300c60.r2.devq/${fileName}`; 
-
+        // ⚠️ METS TON URL R2 ICI
+        const publicUrl = `https://pub-3219a17171b24ba58cf1972fa7300c60.r2.devq/${fileName}`;
         const videoId = crypto.randomUUID();
         await env.DB.prepare("INSERT INTO videos (id, user_id, video_url, description, music) VALUES (?, ?, ?, ?, ?)").bind(videoId, userId, publicUrl, description, music).run();
         return jsonResponse({ success: true, videoId, url: publicUrl });

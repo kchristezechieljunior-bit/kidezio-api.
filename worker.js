@@ -21,7 +21,9 @@ export default {
     };
 
     try {
-      // --- AUTH ---
+      // ==========================================
+      // AUTHENTIFICATION
+      // ==========================================
       if (path === "/api/auth/signup" && request.method === "POST") {
         const { pseudo, password } = await request.json();
         const checkUser = await env.DB.prepare("SELECT id FROM users WHERE pseudo = ?").bind(pseudo).first();
@@ -39,7 +41,9 @@ export default {
         return jsonResponse({ success: true, user });
       }
 
-      // --- FEED & VIDÉOS ---
+      // ==========================================
+      // FEED & VIDÉOS
+      // ==========================================
       if (path === "/api/videos" && request.method === "GET") {
         const userId = url.searchParams.get('userId');
         const { results } = await env.DB.prepare(`
@@ -70,7 +74,9 @@ export default {
         return jsonResponse({ success: true });
       }
 
-      // --- PROFIL & UTILISATEURS ---
+      // ==========================================
+      // PROFIL & UTILISATEURS
+      // ==========================================
       if (/^\/api\/user\/[a-zA-Z0-9-]+$/.test(path) && request.method === "GET") {
         const userId = path.split("/")[3];
         const user = await env.DB.prepare("SELECT id, pseudo, name, bio, avatar_url, invite_code, birthday FROM users WHERE id = ?").bind(userId).first();
@@ -78,7 +84,6 @@ export default {
         return jsonResponse({ success: true, user });
       }
 
-      // ✅ MISE À JOUR DU PROFIL (Anniversaire inclus)
       if (path === "/api/user/update" && request.method === "POST") {
         const { userId, bio, name, avatar_url, birthday, last_birthday_update } = await request.json();
         
@@ -122,7 +127,9 @@ export default {
         return jsonResponse({ success: true, videos: results });
       }
 
-      // --- FOLLOWS & BLOCAGES ---
+      // ==========================================
+      // FOLLOWS & BLOCAGES
+      // ==========================================
       if (path === "/api/follow" && request.method === "POST") {
         const { followerId, followingId } = await request.json();
         await env.DB.prepare("INSERT INTO follows (id, follower_id, following_id) VALUES (?, ?, ?)").bind(crypto.randomUUID(), followerId, followingId).run();
@@ -153,7 +160,9 @@ export default {
         return jsonResponse({ success: true, blocked: results });
       }
 
-      // --- LIKES, VUES, COMMENTS, FAVS, REPOSTS ---
+      // ==========================================
+      // LIKES, VUES, COMMENTS, FAVS, REPOSTS
+      // ==========================================
       if (path === "/api/like" && request.method === "POST") {
         const { userId, videoId } = await request.json();
         const existing = await env.DB.prepare("SELECT id FROM likes WHERE user_id = ? AND video_id = ?").bind(userId, videoId).first();
@@ -175,8 +184,10 @@ export default {
         else { await env.DB.prepare("INSERT INTO reposts (id, user_id, video_id) VALUES (?, ?, ?)").bind(crypto.randomUUID(), userId, videoId).run(); return jsonResponse({ success: true, action: "reposted" }); }
       }
 
+      // ✅ RÈGLE DE COMPTAGE DES VUES (1 vue par utilisateur max)
       if (path === "/api/view" && request.method === "POST") {
         const { userId, videoId } = await request.json();
+        // ON CONFLICT DO NOTHING garantit qu'on ne compte qu'une seule fois par utilisateur
         await env.DB.prepare("INSERT INTO views (id, user_id, video_id) VALUES (?, ?, ?) ON CONFLICT(user_id, video_id) DO NOTHING").bind(crypto.randomUUID(), userId, videoId).run();
         return jsonResponse({ success: true });
       }
@@ -193,7 +204,9 @@ export default {
         return jsonResponse({ success: true, id: commentId });
       }
 
-      // --- CHAT ---
+      // ==========================================
+      // CHAT
+      // ==========================================
       if (path.startsWith("/api/messages/") && request.method === "GET") {
         const otherId = path.split("/")[3];
         const myId = url.searchParams.get('myId');
@@ -206,7 +219,9 @@ export default {
         return jsonResponse({ success: true });
       }
 
-      // --- RECHERCHE, NOTIFICATIONS, CLASSEMENT ---
+      // ==========================================
+      // RECHERCHE, NOTIFICATIONS, CLASSEMENT
+      // ==========================================
       if (path === "/api/search" && request.method === "GET") {
         const query = url.searchParams.get('q');
         const { results } = await env.DB.prepare(`SELECT v.*, u.pseudo, u.avatar_url FROM videos v JOIN users u ON v.user_id = u.id WHERE v.description LIKE ? OR u.pseudo LIKE ? LIMIT 20`).bind('%' + query + '%', '%' + query + '%').all();
@@ -226,7 +241,9 @@ export default {
         return jsonResponse({ success: true, leaderboard: results });
       }
 
-      // --- UPLOAD ---
+      // ==========================================
+      // UPLOAD
+      // ==========================================
       if (path === "/api/upload-avatar" && request.method === "POST") {
         const formData = await request.formData();
         const file = formData.get("avatar");
@@ -251,7 +268,7 @@ export default {
         await env.BUCKET.put(fileName, file.stream(), { httpMetadata: { contentType: file.type } });
         
         // ⚠️ METS TON URL R2 ICI
-        const publicUrl = `https://https://pub-3219a17171b24ba58cf1972fa7300c60.r2.dev/${fileName}`;
+        const publicUrl = `https://pub-3219a17171b24ba58cf1972fa7300c60.r2.dev/${fileName}`;
         
         const videoId = crypto.randomUUID();
         await env.DB.prepare("INSERT INTO videos (id, user_id, video_url, description, music) VALUES (?, ?, ?, ?, ?)").bind(videoId, userId, publicUrl, description, music).run();

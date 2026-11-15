@@ -21,9 +21,7 @@ export default {
     };
 
     try {
-      // ==========================================
-      // AUTHENTIFICATION
-      // ==========================================
+      // --- AUTH ---
       if (path === "/api/auth/signup" && request.method === "POST") {
         const { pseudo, password } = await request.json();
         const checkUser = await env.DB.prepare("SELECT id FROM users WHERE pseudo = ?").bind(pseudo).first();
@@ -45,9 +43,7 @@ export default {
         return jsonResponse({ success: true, user });
       }
 
-      // ==========================================
-      // FEED & VIDÉOS
-      // ==========================================
+      // --- FEED & VIDÉOS ---
       if (path === "/api/videos" && request.method === "GET") {
         const userId = url.searchParams.get('userId');
         const { results } = await env.DB.prepare(`
@@ -64,28 +60,26 @@ export default {
         return jsonResponse({ success: true, videos: results });
       }
 
+      // ✅ CORRECTION : Mise à la corbeille (Soft Delete)
       if (path === "/api/video/delete" && request.method === "POST") {
         const { videoId, userId } = await request.json();
         const video = await env.DB.prepare("SELECT * FROM videos WHERE id = ? AND user_id = ?").bind(videoId, userId).first();
         if (!video) throw new Error("Non autorisé.");
-        try {
-          const key = video.video_url.split('.r2.dev/')[1];
-          if (key) await env.BUCKET.delete(key);
-        } catch (e) { console.error("Erreur suppression R2", e); }
-        await env.DB.prepare("DELETE FROM videos WHERE id = ?").bind(videoId).run();
+        
+        // On met juste la date de suppression, on ne supprime pas de la base
+        await env.DB.prepare("UPDATE videos SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?").bind(videoId).run();
+        
         return jsonResponse({ success: true });
       }
       
+      // ✅ Restauration de la vidéo depuis la corbeille
       if (path === "/api/video/restore" && request.method === "POST") {
         const { videoId } = await request.json();
         await env.DB.prepare("UPDATE videos SET deleted_at = NULL WHERE id = ?").bind(videoId).run();
         return jsonResponse({ success: true });
       }
 
-      // ==========================================
-      // PROFIL & UTILISATEURS
-      // ==========================================
-      // Route spécifique pour l'utilisateur (Regex pour ne pas capturer /videos, etc.)
+      // --- PROFIL & UTILISATEURS ---
       if (/^\/api\/user\/[a-zA-Z0-9-]+$/.test(path) && request.method === "GET") {
         const userId = path.split("/")[3];
         const user = await env.DB.prepare("SELECT id, pseudo, name, bio, avatar_url, invite_code, birthday FROM users WHERE id = ?").bind(userId).first();
@@ -125,13 +119,12 @@ export default {
       }
       if (path.startsWith("/api/user/") && path.includes("/trash")) {
         const userId = path.split("/")[3];
+        // On récupère uniquement les vidéos qui ont une date de suppression
         const { results } = await env.DB.prepare(`SELECT v.*, (SELECT COUNT(*) FROM likes WHERE video_id = v.id) as likes_count, (SELECT COUNT(*) FROM comments WHERE video_id = v.id) as comments_count, (SELECT COUNT(*) FROM views WHERE video_id = v.id) as views_count FROM videos v WHERE v.user_id = ? AND v.deleted_at IS NOT NULL ORDER BY v.deleted_at DESC`).bind(userId).all();
         return jsonResponse({ success: true, videos: results });
       }
 
-      // ==========================================
-      // FOLLOWS & BLOCAGES
-      // ==========================================
+      // --- FOLLOWS & BLOCAGES ---
       if (path === "/api/follow" && request.method === "POST") {
         const { followerId, followingId } = await request.json();
         await env.DB.prepare("INSERT INTO follows (id, follower_id, following_id) VALUES (?, ?, ?)").bind(crypto.randomUUID(), followerId, followingId).run();
@@ -162,9 +155,7 @@ export default {
         return jsonResponse({ success: true, blocked: results });
       }
 
-      // ==========================================
-      // LIKES, VUES, COMMENTS, FAVS, REPOSTS
-      // ==========================================
+      // --- LIKES, VUES, COMMENTS, FAVS, REPOSTS ---
       if (path === "/api/like" && request.method === "POST") {
         const { userId, videoId } = await request.json();
         const existing = await env.DB.prepare("SELECT id FROM likes WHERE user_id = ? AND video_id = ?").bind(userId, videoId).first();
@@ -204,9 +195,7 @@ export default {
         return jsonResponse({ success: true, id: commentId });
       }
 
-      // ==========================================
-      // CHAT
-      // ==========================================
+      // --- CHAT ---
       if (path.startsWith("/api/messages/") && request.method === "GET") {
         const otherId = path.split("/")[3];
         const myId = url.searchParams.get('myId');
@@ -219,9 +208,7 @@ export default {
         return jsonResponse({ success: true });
       }
 
-      // ==========================================
-      // RECHERCHE, NOTIFICATIONS, CLASSEMENT
-      // ==========================================
+      // --- RECHERCHE, NOTIFICATIONS, CLASSEMENT ---
       if (path === "/api/search" && request.method === "GET") {
         const query = url.searchParams.get('q');
         const { results } = await env.DB.prepare(`SELECT v.*, u.pseudo, u.avatar_url FROM videos v JOIN users u ON v.user_id = u.id WHERE v.description LIKE ? OR u.pseudo LIKE ? LIMIT 20`).bind('%' + query + '%', '%' + query + '%').all();
@@ -241,17 +228,17 @@ export default {
         return jsonResponse({ success: true, leaderboard: results });
       }
 
-      // ==========================================
-      // UPLOAD
-      // ==========================================
+      // --- UPLOAD ---
       if (path === "/api/upload-avatar" && request.method === "POST") {
         const formData = await request.formData();
         const file = formData.get("avatar");
         const userId = formData.get("userId");
         const fileName = `avatars/${userId}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.]/g, '')}`;
         await env.BUCKET.put(fileName, file.stream(), { httpMetadata: { contentType: file.type } });
+        
         // ⚠️ METS TON URL R2 ICI
         const publicUrl = `https://pub-3219a17171b24ba58cf1972fa7300c60.r2.devq/${fileName}`;
+        
         await env.DB.prepare("UPDATE users SET avatar_url = ? WHERE id = ?").bind(publicUrl, userId).run();
         return jsonResponse({ success: true, url: publicUrl });
       }
@@ -264,8 +251,10 @@ export default {
         const userId = formData.get("userId");
         const fileName = `videos/${userId}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.]/g, '')}`;
         await env.BUCKET.put(fileName, file.stream(), { httpMetadata: { contentType: file.type } });
+        
         // ⚠️ METS TON URL R2 ICI
         const publicUrl = `https://pub-3219a17171b24ba58cf1972fa7300c60.r2.devq/${fileName}`;
+        
         const videoId = crypto.randomUUID();
         await env.DB.prepare("INSERT INTO videos (id, user_id, video_url, description, music) VALUES (?, ?, ?, ?, ?)").bind(videoId, userId, publicUrl, description, music).run();
         return jsonResponse({ success: true, videoId, url: publicUrl });

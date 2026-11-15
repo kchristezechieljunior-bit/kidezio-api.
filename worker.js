@@ -29,14 +29,11 @@ export default {
 
         if (!pseudo || !password) throw new Error("Pseudo et mot de passe requis.");
 
-        // Vérifier si le pseudo existe déjà
         const checkUser = await env.DB.prepare("SELECT id FROM users WHERE pseudo = ?").bind(pseudo).first();
         if (checkUser) throw new Error("Ce pseudo est déjà pris.");
 
-        // Générer un ID unique et un code d'invitation
         const userId = crypto.randomUUID();
         const inviteCode = 'KID-' + Math.random().toString(36).substring(2, 8).toUpperCase();
-        // (Pour l'instant on stocke le mot de passe en clair, on sécurisera plus tard)
         
         await env.DB.prepare(
           "INSERT INTO users (id, pseudo, email, password_hash, invite_code) VALUES (?, ?, ?, ?, ?)"

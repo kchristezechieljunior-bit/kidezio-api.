@@ -1,4 +1,4 @@
-export default {
+ export default {
   async fetch(request, env) {
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
@@ -18,6 +18,19 @@ export default {
         status,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
+    };
+
+    // --- HELPER : Récupérer les utilisateurs bloqués ---
+    const getBlockedUserIds = async (userId) => {
+      if (!userId) return [];
+      try {
+        const { results } = await env.DB.prepare(`
+          SELECT blocked_id AS id FROM blocked_users WHERE blocker_id = ?
+          UNION
+          SELECT blocker_id AS id FROM blocked_users WHERE blocked_id = ?
+        `).bind(userId, userId).all();
+        return results.map(r => r.id);
+      } catch (e) { return []; }
     };
 
     try {
@@ -86,13 +99,10 @@ export default {
 
       if (path === "/api/user/update" && request.method === "POST") {
         const { userId, bio, name, avatar_url, birthday, last_birthday_update } = await request.json();
-        
         if (birthday && last_birthday_update) {
-          await env.DB.prepare("UPDATE users SET bio = ?, name = ?, avatar_url = ?, birthday = ?, last_birthday_update = ? WHERE id = ?")
-            .bind(bio, name, avatar_url, birthday, last_birthday_update, userId).run();
+          await env.DB.prepare("UPDATE users SET bio = ?, name = ?, avatar_url = ?, birthday = ?, last_birthday_update = ? WHERE id = ?").bind(bio, name, avatar_url, birthday, last_birthday_update, userId).run();
         } else {
-          await env.DB.prepare("UPDATE users SET bio = ?, name = ?, avatar_url = ? WHERE id = ?")
-            .bind(bio, name, avatar_url, userId).run();
+          await env.DB.prepare("UPDATE users SET bio = ?, name = ?, avatar_url = ? WHERE id = ?").bind(bio, name, avatar_url, userId).run();
         }
         return jsonResponse({ success: true });
       }
@@ -111,16 +121,28 @@ export default {
         const { results } = await env.DB.prepare(`SELECT v.*, (SELECT COUNT(*) FROM likes WHERE video_id = v.id) as likes_count, (SELECT COUNT(*) FROM comments WHERE video_id = v.id) as comments_count, (SELECT COUNT(*) FROM views WHERE video_id = v.id) as views_count FROM reposts r JOIN videos v ON r.video_id = v.id WHERE r.user_id = ? AND v.deleted_at IS NULL ORDER BY r.created_at DESC`).bind(userId).all();
         return jsonResponse({ success: true, videos: results });
       }
+      
       if (path.startsWith("/api/user/") && path.includes("/favorites")) {
         const userId = path.split("/")[3];
         const { results } = await env.DB.prepare(`SELECT v.*, (SELECT COUNT(*) FROM likes WHERE video_id = v.id) as likes_count, (SELECT COUNT(*) FROM comments WHERE video_id = v.id) as comments_count, (SELECT COUNT(*) FROM views WHERE video_id = v.id) as views_count FROM favorites f JOIN videos v ON f.video_id = v.id WHERE f.user_id = ? AND v.deleted_at IS NULL ORDER BY f.created_at DESC`).bind(userId).all();
         return jsonResponse({ success: true, videos: results });
       }
+
+      // ✅ MIS À JOUR : Ajout de is_liked = 1 pour l'affichage
       if (path.startsWith("/api/user/") && path.includes("/likes")) {
         const userId = path.split("/")[3];
-        const { results } = await env.DB.prepare(`SELECT v.*, (SELECT COUNT(*) FROM likes WHERE video_id = v.id) as likes_count, (SELECT COUNT(*) FROM comments WHERE video_id = v.id) as comments_count, (SELECT COUNT(*) FROM views WHERE video_id = v.id) as views_count FROM likes l JOIN videos v ON l.video_id = v.id WHERE l.user_id = ? AND v.deleted_at IS NULL ORDER BY l.created_at DESC`).bind(userId).all();
+        const { results } = await env.DB.prepare(`
+          SELECT v.*, 
+                 (SELECT COUNT(*) FROM likes WHERE video_id = v.id) as likes_count, 
+                 (SELECT COUNT(*) FROM comments WHERE video_id = v.id) as comments_count, 
+                 (SELECT COUNT(*) FROM views WHERE video_id = v.id) as views_count,
+                 1 as is_liked
+          FROM likes l JOIN videos v ON l.video_id = v.id 
+          WHERE l.user_id = ? AND v.deleted_at IS NULL ORDER BY l.created_at DESC
+        `).bind(userId).all();
         return jsonResponse({ success: true, videos: results });
       }
+      
       if (path.startsWith("/api/user/") && path.includes("/trash")) {
         const userId = path.split("/")[3];
         const { results } = await env.DB.prepare(`SELECT v.*, (SELECT COUNT(*) FROM likes WHERE video_id = v.id) as likes_count, (SELECT COUNT(*) FROM comments WHERE video_id = v.id) as comments_count, (SELECT COUNT(*) FROM views WHERE video_id = v.id) as views_count FROM videos v WHERE v.user_id = ? AND v.deleted_at IS NOT NULL ORDER BY v.deleted_at DESC`).bind(userId).all();
@@ -135,25 +157,46 @@ export default {
         await env.DB.prepare("INSERT INTO follows (id, follower_id, following_id) VALUES (?, ?, ?)").bind(crypto.randomUUID(), followerId, followingId).run();
         return jsonResponse({ success: true });
       }
+      
       if (path === "/api/unfollow" && request.method === "POST") {
         const { followerId, followingId } = await request.json();
         await env.DB.prepare("DELETE FROM follows WHERE follower_id = ? AND following_id = ?").bind(followerId, followingId).run();
         return jsonResponse({ success: true });
       }
+
+      // ✅ MIS À JOUR : Gestion des bloqués + is_following_me
       if (path.startsWith("/api/follows/") && request.method === "GET") {
         const type = path.split("/")[3]; 
         const userId = path.split("/")[4];
-        let query = type === 'followers' 
-          ? `SELECT u.id, u.pseudo, u.avatar_url FROM follows f JOIN users u ON f.follower_id = u.id WHERE f.following_id = ?`
-          : `SELECT u.id, u.pseudo, u.avatar_url FROM follows f JOIN users u ON f.following_id = u.id WHERE f.follower_id = ?`;
-        const { results } = await env.DB.prepare(query).bind(userId).all();
+        const myId = url.searchParams.get('myId') || '';
+        const blockedIds = await getBlockedUserIds(myId);
+        const blockedClause = blockedIds.length > 0 ? `AND u.id NOT IN (${blockedIds.map(() => '?').join(',')})` : '';
+
+        let query = '';
+        let bindings = [];
+
+        if (type === 'followers') {
+          query = `SELECT u.id, u.pseudo, u.name, u.avatar_url, EXISTS(SELECT 1 FROM follows f2 WHERE f2.follower_id = ? AND f2.following_id = u.id) AS is_following_me 
+                   FROM follows f JOIN users u ON f.follower_id = u.id 
+                   WHERE f.following_id = ? ${blockedClause} ORDER BY f.created_at DESC LIMIT 50`;
+          bindings = [userId, userId, ...blockedIds];
+        } else {
+          query = `SELECT u.id, u.pseudo, u.name, u.avatar_url, EXISTS(SELECT 1 FROM follows f2 WHERE f2.follower_id = u.id AND f2.following_id = ?) AS is_following_me 
+                   FROM follows f JOIN users u ON f.following_id = u.id 
+                   WHERE f.follower_id = ? ${blockedClause} ORDER BY f.created_at DESC LIMIT 50`;
+          bindings = [myId, userId, ...blockedIds];
+        }
+
+        const { results } = await env.DB.prepare(query).bind(...bindings).all();
         return jsonResponse({ success: true, users: results });
       }
+
       if (path === "/api/block" && request.method === "POST") {
         const { blockerId, blockedId } = await request.json();
         await env.DB.prepare("INSERT INTO blocked_users (id, blocker_id, blocked_id) VALUES (?, ?, ?)").bind(crypto.randomUUID(), blockerId, blockedId).run();
         return jsonResponse({ success: true });
       }
+      
       if (path.startsWith("/api/blocked/") && request.method === "GET") {
         const userId = path.split("/")[3];
         const { results } = await env.DB.prepare("SELECT blocker_id, blocked_id FROM blocked_users WHERE blocker_id = ? OR blocked_id = ?").bind(userId, userId).all();
@@ -184,10 +227,8 @@ export default {
         else { await env.DB.prepare("INSERT INTO reposts (id, user_id, video_id) VALUES (?, ?, ?)").bind(crypto.randomUUID(), userId, videoId).run(); return jsonResponse({ success: true, action: "reposted" }); }
       }
 
-      // ✅ RÈGLE DE COMPTAGE DES VUES (1 vue par utilisateur max)
       if (path === "/api/view" && request.method === "POST") {
         const { userId, videoId } = await request.json();
-        // ON CONFLICT DO NOTHING garantit qu'on ne compte qu'une seule fois par utilisateur
         await env.DB.prepare("INSERT INTO views (id, user_id, video_id) VALUES (?, ?, ?) ON CONFLICT(user_id, video_id) DO NOTHING").bind(crypto.randomUUID(), userId, videoId).run();
         return jsonResponse({ success: true });
       }
@@ -197,6 +238,7 @@ export default {
         const { results } = await env.DB.prepare(`SELECT c.*, u.pseudo, u.avatar_url FROM comments c JOIN users u ON c.user_id = u.id WHERE c.video_id = ? ORDER BY c.created_at ASC`).bind(videoId).all();
         return jsonResponse({ success: true, comments: results });
       }
+      
       if (path === "/api/comments" && request.method === "POST") {
         const { videoId, userId, text, parentId } = await request.json();
         const commentId = crypto.randomUUID();
@@ -213,6 +255,7 @@ export default {
         const { results } = await env.DB.prepare(`SELECT * FROM messages WHERE (sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?) ORDER BY created_at ASC LIMIT 50`).bind(myId, otherId, otherId, myId).all();
         return jsonResponse({ success: true, messages: results });
       }
+      
       if (path === "/api/messages" && request.method === "POST") {
         const { sender_id, receiver_id, content } = await request.json();
         await env.DB.prepare("INSERT INTO messages (id, sender_id, receiver_id, content) VALUES (?, ?, ?, ?)").bind(crypto.randomUUID(), sender_id, receiver_id, content).run();
@@ -250,10 +293,7 @@ export default {
         const userId = formData.get("userId");
         const fileName = `avatars/${userId}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.]/g, '')}`;
         await env.BUCKET.put(fileName, file.stream(), { httpMetadata: { contentType: file.type } });
-        
-        // ⚠️ METS TON URL R2 ICI
         const publicUrl = `https://pub-3219a17171b24ba58cf1972fa7300c60.r2.dev/${fileName}`;
-        
         await env.DB.prepare("UPDATE users SET avatar_url = ? WHERE id = ?").bind(publicUrl, userId).run();
         return jsonResponse({ success: true, url: publicUrl });
       }
@@ -266,10 +306,7 @@ export default {
         const userId = formData.get("userId");
         const fileName = `videos/${userId}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.]/g, '')}`;
         await env.BUCKET.put(fileName, file.stream(), { httpMetadata: { contentType: file.type } });
-        
-        // ⚠️ METS TON URL R2 ICI
         const publicUrl = `https://pub-3219a17171b24ba58cf1972fa7300c60.r2.dev/${fileName}`;
-        
         const videoId = crypto.randomUUID();
         await env.DB.prepare("INSERT INTO videos (id, user_id, video_url, description, music) VALUES (?, ?, ?, ?, ?)").bind(videoId, userId, publicUrl, description, music).run();
         return jsonResponse({ success: true, videoId, url: publicUrl });

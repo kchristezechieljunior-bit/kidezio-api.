@@ -42,6 +42,7 @@ export default {
         return new Response(JSON.stringify({ success: true, userId, pseudo, inviteCode }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
+    
       }
       // --- CONNEXION (Login) ---
       if (path === "/api/auth/login" && request.method === "POST") {

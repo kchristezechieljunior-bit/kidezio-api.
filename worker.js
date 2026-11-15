@@ -57,7 +57,6 @@ export default {
 
       // --- LISTE DES VIDÉOS (Feed) ---
       if (path === "/api/videos" && request.method === "GET") {
-        // On récupère les vidéos avec les infos de l'utilisateur et les compteurs
         const { results } = await env.DB.prepare(`
           SELECT v.*, u.pseudo, u.avatar_url,
                  (SELECT COUNT(*) FROM likes WHERE video_id = v.id) as likes_count,
@@ -80,6 +79,35 @@ export default {
         const user = await env.DB.prepare("SELECT id, pseudo, bio, avatar_url, invite_code FROM users WHERE id = ?").bind(userId).first();
         if (!user) throw new Error("Utilisateur introuvable.");
         return new Response(JSON.stringify({ success: true, user }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      // --- UPLOAD VIDÉO ---
+      if (path === "/api/upload" && request.method === "POST") {
+        const formData = await request.formData();
+        const file = formData.get("video");
+        const description = formData.get("description") || "";
+        const music = formData.get("music") || "Son original";
+        const userId = formData.get("userId");
+
+        if (!file || !userId) throw new Error("Fichier ou utilisateur manquant.");
+
+        const fileName = `videos/${userId}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.]/g, '')}`;
+        
+        await env.BUCKET.put(fileName, file.stream(), {
+          httpMetadata: { contentType: file.type },
+        });
+
+        // ⚠️ REMPLACE PAR L'URL PUBLIQUE DE TON BUCKET R2
+        const publicUrl = `https://pub-3219a17171b24ba58cf1972fa7300c60.r2.dev/${fileName}`; 
+
+        const videoId = crypto.randomUUID();
+        await env.DB.prepare(
+          "INSERT INTO videos (id, user_id, video_url, description, music) VALUES (?, ?, ?, ?, ?)"
+        ).bind(videoId, userId, publicUrl, description, music).run();
+
+        return new Response(JSON.stringify({ success: true, videoId, url: publicUrl }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }

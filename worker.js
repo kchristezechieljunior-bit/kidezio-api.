@@ -73,21 +73,21 @@ export default {
       }
 
       // --- VIDÉOS D'UN UTILISATEUR (Profil) ---
-      if (path.startsWith("/api/user/") && path.endsWith("/videos") && request.method === "GET") {
-        const userId = path.split("/")[3];
-        const { results } = await env.DB.prepare(`
-          SELECT v.*, 
-                 (SELECT COUNT(*) FROM likes WHERE video_id = v.id) as likes_count,
-                 (SELECT COUNT(*) FROM comments WHERE video_id = v.id) as comments_count,
-                 (SELECT COUNT(*) FROM views WHERE video_id = v.id) as views_count
-          FROM videos v
-          WHERE v.user_id = ? AND v.deleted_at IS NULL
-          ORDER BY v.created_at DESC
-        `).bind(userId).all();
-        return new Response(JSON.stringify({ success: true, videos: results }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
+if (path.startsWith("/api/user/") && path.endsWith("/videos") && request.method === "GET") {
+  const userId = path.split("/")[3]; 
+  const { results } = await env.DB.prepare(`
+    SELECT v.*, 
+           (SELECT COUNT(*) FROM likes WHERE video_id = v.id) as likes_count,
+           (SELECT COUNT(*) FROM comments WHERE video_id = v.id) as comments_count
+    FROM videos v
+    WHERE v.user_id = ? AND v.deleted_at IS NULL
+    ORDER BY v.created_at DESC
+  `).bind(userId).all();
+  
+  return new Response(JSON.stringify({ success: true, videos: results }), {
+    headers: { ...corsHeaders, "Content-Type": "application/json" },
+  });
+}
 
       // --- INFOS UTILISATEUR (Profil) ---
       if (path.startsWith("/api/user/") && request.method === "GET") {

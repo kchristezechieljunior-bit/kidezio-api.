@@ -235,8 +235,7 @@ export default {
         await env.BUCKET.put(fileName, file.stream(), { httpMetadata: { contentType: file.type } });
         
         // ⚠️ METS TON URL R2 ICI
-        const publicUrl = `https://pub-3219a17171b24ba58cf1972fa7300c60.r2.dev
-      /${fileName}`;
+        const publicUrl = `https://pub-3219a17171b24ba58cf1972fa7300c60.r2.dev/${fileName}`;
         
         await env.DB.prepare("UPDATE users SET avatar_url = ? WHERE id = ?").bind(publicUrl, userId).run();
         return jsonResponse({ success: true, url: publicUrl });
@@ -252,7 +251,7 @@ export default {
         await env.BUCKET.put(fileName, file.stream(), { httpMetadata: { contentType: file.type } });
         
         // ⚠️ METS TON URL R2 ICI
-        const publicUrl = `https://pub-3219a17171b24ba58cf1972fa7300c60.r2.dev/${fileName}`;
+        const publicUrl = `https://https://pub-3219a17171b24ba58cf1972fa7300c60.r2.dev/${fileName}`;
         
         const videoId = crypto.randomUUID();
         await env.DB.prepare("INSERT INTO videos (id, user_id, video_url, description, music) VALUES (?, ?, ?, ?, ?)").bind(videoId, userId, publicUrl, description, music).run();

@@ -26,7 +26,6 @@ export default {
       if (path === "/api/auth/signup" && request.method === "POST") {
         const body = await request.json();
         const { pseudo, password } = body;
-
         if (!pseudo || !password) throw new Error("Pseudo et mot de passe requis.");
 
         const checkUser = await env.DB.prepare("SELECT id FROM users WHERE pseudo = ?").bind(pseudo).first();
@@ -48,11 +47,38 @@ export default {
       if (path === "/api/auth/login" && request.method === "POST") {
         const body = await request.json();
         const { pseudo, password } = body;
-
         const user = await env.DB.prepare("SELECT * FROM users WHERE pseudo = ? AND password_hash = ?").bind(pseudo, password).first();
-        
         if (!user) throw new Error("Pseudo ou mot de passe incorrect.");
 
+        return new Response(JSON.stringify({ success: true, user }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      // --- LISTE DES VIDÉOS (Feed) ---
+      if (path === "/api/videos" && request.method === "GET") {
+        // On récupère les vidéos avec les infos de l'utilisateur et les compteurs
+        const { results } = await env.DB.prepare(`
+          SELECT v.*, u.pseudo, u.avatar_url,
+                 (SELECT COUNT(*) FROM likes WHERE video_id = v.id) as likes_count,
+                 (SELECT COUNT(*) FROM comments WHERE video_id = v.id) as comments_count
+          FROM videos v
+          JOIN users u ON v.user_id = u.id
+          WHERE v.deleted_at IS NULL
+          ORDER BY v.created_at DESC
+          LIMIT 50
+        `).all();
+        
+        return new Response(JSON.stringify({ success: true, videos: results }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      // --- INFOS UTILISATEUR (Profil) ---
+      if (path.startsWith("/api/user/") && request.method === "GET") {
+        const userId = path.split("/")[3];
+        const user = await env.DB.prepare("SELECT id, pseudo, bio, avatar_url, invite_code FROM users WHERE id = ?").bind(userId).first();
+        if (!user) throw new Error("Utilisateur introuvable.");
         return new Response(JSON.stringify({ success: true, user }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });

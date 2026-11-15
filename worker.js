@@ -24,7 +24,7 @@ export default {
 
       // --- INSCRIPTION (Signup) ---
       if (path === "/api/auth/signup" && request.method === "POST") {
-        const body = await req.json();
+        const body = await request.json(); // ✅ Correction ici
         const { pseudo, password } = body;
 
         if (!pseudo || !password) throw new Error("Pseudo et mot de passe requis.");
@@ -46,7 +46,7 @@ export default {
 
       // --- CONNEXION (Login) ---
       if (path === "/api/auth/login" && request.method === "POST") {
-        const body = await req.json();
+        const body = await request.json(); // ✅ Correction ici aussi
         const { pseudo, password } = body;
 
         const user = await env.DB.prepare("SELECT * FROM users WHERE pseudo = ? AND password_hash = ?").bind(pseudo, password).first();

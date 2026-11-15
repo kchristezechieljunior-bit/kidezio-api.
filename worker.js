@@ -43,7 +43,6 @@ export default {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
-
       // --- CONNEXION (Login) ---
       if (path === "/api/auth/login" && request.method === "POST") {
         const body = await request.json(); // ✅ Correction ici aussi

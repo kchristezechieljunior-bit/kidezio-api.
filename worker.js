@@ -21,14 +21,20 @@ export default {
     };
 
     try {
-      // --- AUTH ---
+      // ==========================================
+      // AUTHENTIFICATION
+      // ==========================================
       if (path === "/api/auth/signup" && request.method === "POST") {
         const { pseudo, password } = await request.json();
         const checkUser = await env.DB.prepare("SELECT id FROM users WHERE pseudo = ?").bind(pseudo).first();
         if (checkUser) throw new Error("Ce pseudo est déjà pris.");
+        
         const userId = crypto.randomUUID();
         const inviteCode = 'KID-' + Math.random().toString(36).substring(2, 8).toUpperCase();
-        await env.DB.prepare("INSERT INTO users (id, pseudo, email, password_hash, invite_code) VALUES (?, ?, ?, ?, ?)").bind(userId, pseudo, pseudo + "@kidezio.local", password, inviteCode).run();
+        
+        await env.DB.prepare("INSERT INTO users (id, pseudo, email, password_hash, invite_code) VALUES (?, ?, ?, ?, ?)")
+          .bind(userId, pseudo, pseudo + "@kidezio.local", password, inviteCode).run();
+          
         return jsonResponse({ success: true, userId, pseudo, inviteCode });
       }
 
@@ -39,7 +45,9 @@ export default {
         return jsonResponse({ success: true, user });
       }
 
-      // --- FEED & VIDÉOS ---
+      // ==========================================
+      // FEED & VIDÉOS
+      // ==========================================
       if (path === "/api/videos" && request.method === "GET") {
         const userId = url.searchParams.get('userId');
         const { results } = await env.DB.prepare(`
@@ -63,7 +71,7 @@ export default {
         try {
           const key = video.video_url.split('.r2.dev/')[1];
           if (key) await env.BUCKET.delete(key);
-        } catch (e) {}
+        } catch (e) { console.error("Erreur supression R2", e); }
         await env.DB.prepare("DELETE FROM videos WHERE id = ?").bind(videoId).run();
         return jsonResponse({ success: true });
       }
@@ -74,8 +82,10 @@ export default {
         return jsonResponse({ success: true });
       }
 
-      // --- PROFIL & UTILISATEURS ---
-      if (path.startsWith("/api/user/") && request.method === "GET" && !path.includes("/videos") && !path.includes("/follow")) {
+      // ==========================================
+      // PROFIL & UTILISATEURS
+      // ==========================================
+      if (path.startsWith("/api/user/") && request.method === "GET" && !path.includes("/videos") && !path.includes("/follow") && !path.includes("/reposts") && !path.includes("/favorites") && !path.includes("/likes") && !path.includes("/trash")) {
         const userId = path.split("/")[3];
         const user = await env.DB.prepare("SELECT id, pseudo, name, bio, avatar_url, invite_code, birthday FROM users WHERE id = ?").bind(userId).first();
         return jsonResponse({ success: true, user });
@@ -90,13 +100,37 @@ export default {
       if (path.startsWith("/api/user/") && path.endsWith("/videos") && request.method === "GET") {
         const userId = path.split("/")[3]; 
         const { results } = await env.DB.prepare(`
-          SELECT v.*, (SELECT COUNT(*) FROM likes WHERE video_id = v.id) as likes_count, (SELECT COUNT(*) FROM comments WHERE video_id = v.id) as comments_count, (SELECT COUNT(*) FROM views WHERE video_id = v.id) as views_count, (SELECT COUNT(*) FROM favorites WHERE video_id = v.id) as favorites_count, (SELECT COUNT(*) FROM reposts WHERE video_id = v.id) as reposts_count
+          SELECT v.*, (SELECT COUNT(*) FROM likes WHERE video_id = v.id) as likes_count, (SELECT COUNT(*) FROM comments WHERE video_id = v.id) as comments_count, (SELECT COUNT(*) FROM views WHERE video_id = v.id) as views_count
           FROM videos v WHERE v.user_id = ? AND v.deleted_at IS NULL ORDER BY v.created_at DESC
         `).bind(userId).all();
         return jsonResponse({ success: true, videos: results });
       }
 
-      // --- FOLLOWS & BLOCAGES ---
+      // --- VIDÉOS DES ONGLETS (Reposts, Favoris, Likes, Corbeille) ---
+      if (path.startsWith("/api/user/") && path.includes("/reposts")) {
+        const userId = path.split("/")[3];
+        const { results } = await env.DB.prepare(`SELECT v.*, (SELECT COUNT(*) FROM likes WHERE video_id = v.id) as likes_count, (SELECT COUNT(*) FROM comments WHERE video_id = v.id) as comments_count, (SELECT COUNT(*) FROM views WHERE video_id = v.id) as views_count FROM reposts r JOIN videos v ON r.video_id = v.id WHERE r.user_id = ? AND v.deleted_at IS NULL ORDER BY r.created_at DESC`).bind(userId).all();
+        return jsonResponse({ success: true, videos: results });
+      }
+      if (path.startsWith("/api/user/") && path.includes("/favorites")) {
+        const userId = path.split("/")[3];
+        const { results } = await env.DB.prepare(`SELECT v.*, (SELECT COUNT(*) FROM likes WHERE video_id = v.id) as likes_count, (SELECT COUNT(*) FROM comments WHERE video_id = v.id) as comments_count, (SELECT COUNT(*) FROM views WHERE video_id = v.id) as views_count FROM favorites f JOIN videos v ON f.video_id = v.id WHERE f.user_id = ? AND v.deleted_at IS NULL ORDER BY f.created_at DESC`).bind(userId).all();
+        return jsonResponse({ success: true, videos: results });
+      }
+      if (path.startsWith("/api/user/") && path.includes("/likes")) {
+        const userId = path.split("/")[3];
+        const { results } = await env.DB.prepare(`SELECT v.*, (SELECT COUNT(*) FROM likes WHERE video_id = v.id) as likes_count, (SELECT COUNT(*) FROM comments WHERE video_id = v.id) as comments_count, (SELECT COUNT(*) FROM views WHERE video_id = v.id) as views_count FROM likes l JOIN videos v ON l.video_id = v.id WHERE l.user_id = ? AND v.deleted_at IS NULL ORDER BY l.created_at DESC`).bind(userId).all();
+        return jsonResponse({ success: true, videos: results });
+      }
+      if (path.startsWith("/api/user/") && path.includes("/trash")) {
+        const userId = path.split("/")[3];
+        const { results } = await env.DB.prepare(`SELECT v.*, (SELECT COUNT(*) FROM likes WHERE video_id = v.id) as likes_count, (SELECT COUNT(*) FROM comments WHERE video_id = v.id) as comments_count, (SELECT COUNT(*) FROM views WHERE video_id = v.id) as views_count FROM videos v WHERE v.user_id = ? AND v.deleted_at IS NOT NULL ORDER BY v.deleted_at DESC`).bind(userId).all();
+        return jsonResponse({ success: true, videos: results });
+      }
+
+      // ==========================================
+      // FOLLOWS & BLOCAGES
+      // ==========================================
       if (path === "/api/follow" && request.method === "POST") {
         const { followerId, followingId } = await request.json();
         await env.DB.prepare("INSERT INTO follows (id, follower_id, following_id) VALUES (?, ?, ?)").bind(crypto.randomUUID(), followerId, followingId).run();
@@ -127,7 +161,9 @@ export default {
         return jsonResponse({ success: true, blocked: results });
       }
 
-      // --- LIKES, VUES, COMMENTS, FAVS, REPOSTS ---
+      // ==========================================
+      // LIKES, VUES, COMMENTS, FAVS, REPOSTS
+      // ==========================================
       if (path === "/api/like" && request.method === "POST") {
         const { userId, videoId } = await request.json();
         const existing = await env.DB.prepare("SELECT id FROM likes WHERE user_id = ? AND video_id = ?").bind(userId, videoId).first();
@@ -167,7 +203,9 @@ export default {
         return jsonResponse({ success: true, id: commentId });
       }
 
-      // --- CHAT ---
+      // ==========================================
+      // CHAT
+      // ==========================================
       if (path.startsWith("/api/messages/") && request.method === "GET") {
         const otherId = path.split("/")[3];
         const myId = url.searchParams.get('myId');
@@ -180,7 +218,9 @@ export default {
         return jsonResponse({ success: true });
       }
 
-      // --- RECHERCHE & NOTIFICATIONS ---
+      // ==========================================
+      // RECHERCHE & NOTIFICATIONS
+      // ==========================================
       if (path === "/api/search" && request.method === "GET") {
         const query = url.searchParams.get('q');
         const { results } = await env.DB.prepare(`SELECT v.*, u.pseudo, u.avatar_url FROM videos v JOIN users u ON v.user_id = u.id WHERE v.description LIKE ? OR u.pseudo LIKE ? LIMIT 20`).bind('%' + query + '%', '%' + query + '%').all();
@@ -188,26 +228,32 @@ export default {
       }
       
       if (path === "/api/notifications" && request.method === "GET") {
-        // Note: nécessite la création de la table notifications et des triggers. On fera ça plus tard.
         return jsonResponse({ success: true, notifs: [] });
       }
 
-      // --- UPLOAD ---
+      // ==========================================
+      // UPLOAD VIDÉO
+      // ==========================================
       if (path === "/api/upload" && request.method === "POST") {
         const formData = await request.formData();
         const file = formData.get("video");
         const description = formData.get("description") || "";
         const music = formData.get("music") || "Son original";
         const userId = formData.get("userId");
+
         const fileName = `videos/${userId}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.]/g, '')}`;
         await env.BUCKET.put(fileName, file.stream(), { httpMetadata: { contentType: file.type } });
-        const publicUrl = `https://pub-3219a17171b24ba58cf1972fa7300c60.r2.devq/${fileName}`; // ⚠️ TON URL R2 ICI
+
+        // ⚠️ METS TON URL R2 ICI (Exemple: https://pub-abc123.r2.dev/)
+        const publicUrl = `https://pub-3219a17171b24ba58cf1972fa7300c60.r2.devq/${fileName}`; 
+
         const videoId = crypto.randomUUID();
         await env.DB.prepare("INSERT INTO videos (id, user_id, video_url, description, music) VALUES (?, ?, ?, ?, ?)").bind(videoId, userId, publicUrl, description, music).run();
         return jsonResponse({ success: true, videoId, url: publicUrl });
       }
 
       return jsonResponse({ error: "Route introuvable" }, 404);
+
     } catch (error) {
       return jsonResponse({ error: error.message }, 400);
     }

@@ -67,7 +67,23 @@ export default {
           ORDER BY v.created_at DESC
           LIMIT 50
         `).all();
-        
+        return new Response(JSON.stringify({ success: true, videos: results }), {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      // --- VIDÉOS D'UN UTILISATEUR (Profil) ---
+      if (path.startsWith("/api/user/") && path.endsWith("/videos") && request.method === "GET") {
+        const userId = path.split("/")[3];
+        const { results } = await env.DB.prepare(`
+          SELECT v.*, 
+                 (SELECT COUNT(*) FROM likes WHERE video_id = v.id) as likes_count,
+                 (SELECT COUNT(*) FROM comments WHERE video_id = v.id) as comments_count,
+                 (SELECT COUNT(*) FROM views WHERE video_id = v.id) as views_count
+          FROM videos v
+          WHERE v.user_id = ? AND v.deleted_at IS NULL
+          ORDER BY v.created_at DESC
+        `).bind(userId).all();
         return new Response(JSON.stringify({ success: true, videos: results }), {
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
@@ -99,7 +115,7 @@ export default {
           httpMetadata: { contentType: file.type },
         });
 
-        // ⚠️ REMPLACE PAR L'URL PUBLIQUE DE TON BUCKET R2
+        // ⚠️ METS TON URL R2 ICI
         const publicUrl = `https://pub-3219a17171b24ba58cf1972fa7300c60.r2.dev/${fileName}`; 
 
         const videoId = crypto.randomUUID();

@@ -218,6 +218,18 @@ export default {
         return jsonResponse({ success: true });
       }
 
+      // --- CLASSEMENT MONDIAL ---
+if (path === "/api/leaderboard" && request.method === "GET") {
+  const { results } = await env.DB.prepare(`
+    SELECT u.id, u.pseudo, COUNT(f.id) as followers
+    FROM users u
+    LEFT JOIN follows f ON f.following_id = u.id
+    GROUP BY u.id, u.pseudo
+    ORDER BY followers DESC
+    LIMIT 100
+  `).all();
+  return jsonResponse({ success: true, leaderboard: results });
+}
       // ==========================================
       // RECHERCHE & NOTIFICATIONS
       // ==========================================

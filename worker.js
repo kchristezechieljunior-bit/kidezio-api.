@@ -231,6 +231,21 @@ export default {
         return jsonResponse({ success: true, notifs: [] });
       }
 
+      // --- UPLOAD AVATAR ---
+if (path === "/api/upload-avatar" && request.method === "POST") {
+  const formData = await request.formData();
+  const file = formData.get("avatar");
+  const userId = formData.get("userId");
+  const fileName = `avatars/${userId}/${Date.now()}-${file.name.replace(/[^a-zA-Z0-9.]/g, '')}`;
+  
+  await env.BUCKET.put(fileName, file.stream(), { httpMetadata: { contentType: file.type } });
+  
+  // ⚠️ METS TON URL R2 ICI (ex: https://pub-abc123.r2.dev/)
+  const publicUrl = `https://pub-3219a17171b24ba58cf1972fa7300c60.r2.devq/${fileName}`;
+  
+  await env.DB.prepare("UPDATE users SET avatar_url = ? WHERE id = ?").bind(publicUrl, userId).run();
+  return jsonResponse({ success: true, url: publicUrl });
+}
       // ==========================================
       // UPLOAD VIDÉO
       // ==========================================

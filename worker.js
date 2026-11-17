@@ -60,13 +60,10 @@ export default {
         return jsonResponse({ success: true, videos: results });
       }
 
-      // ✅ ROUTE : Récupérer les vidéos par son
       if (path === "/api/videos/sound" && request.method === "GET") {
         const soundName = url.searchParams.get('music');
         const userId = url.searchParams.get('userId') || '';
-        
         const sql = "SELECT v.*, u.pseudo, u.avatar_url, (SELECT COUNT(*) FROM likes WHERE video_id = v.id) as likes_count, (SELECT COUNT(*) FROM comments WHERE video_id = v.id) as comments_count, (SELECT COUNT(*) FROM views WHERE video_id = v.id) as views_count, (SELECT COUNT(*) FROM likes WHERE video_id = v.id AND user_id = ?) as is_liked, (SELECT COUNT(*) FROM reposts WHERE video_id = v.id) as reposts_count, (SELECT COUNT(*) FROM favorites WHERE video_id = v.id AND user_id = ?) as is_favorited FROM videos v JOIN users u ON v.user_id = u.id WHERE v.music = ? AND v.deleted_at IS NULL ORDER BY v.created_at DESC LIMIT 50";
-        
         const { results } = await env.DB.prepare(sql).bind(userId, userId, soundName).all();
         return jsonResponse({ success: true, videos: results });
       }
@@ -181,7 +178,6 @@ export default {
         }
         
         query += " ORDER BY f.created_at DESC LIMIT 50";
-
         const { results } = await env.DB.prepare(query).bind(...bindings).all();
         return jsonResponse({ success: true, users: results });
       }
@@ -209,7 +205,6 @@ export default {
           return jsonResponse({ success: true, action: "unliked" }); 
         } else { 
           await env.DB.prepare("INSERT INTO likes (id, user_id, video_id) VALUES (?, ?, ?)").bind(crypto.randomUUID(), userId, videoId).run(); 
-          
           const video = await env.DB.prepare("SELECT user_id FROM videos WHERE id = ?").bind(videoId).first();
           if (video && video.user_id !== userId) {
             await env.DB.prepare("INSERT INTO notifications (id, user_id, sender_id, type, video_id) VALUES (?, ?, ?, ?, ?)").bind(crypto.randomUUID(), video.user_id, userId, 'like', videoId).run();
@@ -248,16 +243,13 @@ export default {
         const { videoId, userId, text, parentId } = await request.json();
         const commentId = crypto.randomUUID();
         await env.DB.prepare("INSERT INTO comments (id, video_id, user_id, text, parent_id) VALUES (?, ?, ?, ?, ?)").bind(commentId, videoId, userId, text, parentId).run();
-        
         const video = await env.DB.prepare("SELECT user_id FROM videos WHERE id = ?").bind(videoId).first();
         if (video && video.user_id !== userId) {
           await env.DB.prepare("INSERT INTO notifications (id, user_id, sender_id, type, video_id) VALUES (?, ?, ?, ?, ?)").bind(crypto.randomUUID(), video.user_id, userId, 'comment', videoId).run();
         }
-        
         return jsonResponse({ success: true, id: commentId });
       }
 
-      // ✅ Like d'un commentaire
       if (path === "/api/comment/like" && request.method === "POST") {
         const { userId, commentId } = await request.json();
         const existing = await env.DB.prepare("SELECT id FROM comment_likes WHERE user_id = ? AND comment_id = ?").bind(userId, commentId).first();
@@ -266,7 +258,6 @@ export default {
           return jsonResponse({ success: true, action: "unliked" }); 
         } else { 
           await env.DB.prepare("INSERT INTO comment_likes (id, user_id, comment_id) VALUES (?, ?, ?)").bind(crypto.randomUUID(), userId, commentId).run(); 
-          
           const comment = await env.DB.prepare("SELECT user_id FROM comments WHERE id = ?").bind(commentId).first();
           if (comment && comment.user_id !== userId) {
             await env.DB.prepare("INSERT INTO notifications (id, user_id, sender_id, type, comment_id) VALUES (?, ?, ?, ?, ?)").bind(crypto.randomUUID(), comment.user_id, userId, 'comment_like', commentId).run();
@@ -275,14 +266,13 @@ export default {
         }
       }
 
-      // ✅ Suppression d'un commentaire
       if (path === "/api/comment/delete" && request.method === "POST") {
         const { commentId, userId } = await request.json();
         await env.DB.prepare("DELETE FROM comments WHERE id = ? AND user_id = ?").bind(commentId, userId).run();
         return jsonResponse({ success: true });
           }
             // ==========================================
-      // CHAT
+      // CHAT & DEMANDES DE DISCUSSION
       // ==========================================
       if (path.startsWith("/api/messages/") && request.method === "GET") {
         const otherId = path.split("/")[3];
@@ -297,6 +287,75 @@ export default {
         return jsonResponse({ success: true });
       }
 
+      // ✅ NOUVEAU : Envoyer une demande de discussion
+      if (path === "/api/chat/request" && request.method === "POST") {
+        const { senderId, receiverId } = await request.json();
+        await env.DB.prepare("INSERT OR IGNORE INTO chat_requests (id, sender_id, receiver_id) VALUES (?, ?, ?)").bind(crypto.randomUUID(), senderId, receiverId).run();
+        return jsonResponse({ success: true });
+      }
+
+      // ✅ NOUVEAU : Accepter une demande de discussion
+      if (path === "/api/chat/accept" && request.method === "POST") {
+        const { requestId } = await request.json();
+        await env.DB.prepare("UPDATE chat_requests SET status = 'accepted' WHERE id = ?").bind(requestId).run();
+        return jsonResponse({ success: true });
+      }
+
+      // ✅ NOUVEAU : Ignorer (supprimer) une demande de discussion
+      if (path === "/api/chat/ignore" && request.method === "POST") {
+        const { requestId } = await request.json();
+        await env.DB.prepare("DELETE FROM chat_requests WHERE id = ?").bind(requestId).run();
+        return jsonResponse({ success: true });
+      }
+
+      // ✅ NOUVEAU : Vérifier les règles de discussion
+      if (path === "/api/chat/check" && request.method === "GET") {
+        const senderId = url.searchParams.get('senderId');
+        const receiverId = url.searchParams.get('receiverId');
+        
+        const follow1 = await env.DB.prepare("SELECT id FROM follows WHERE follower_id = ? AND following_id = ?").bind(senderId, receiverId).first();
+        const follow2 = await env.DB.prepare("SELECT id FROM follows WHERE follower_id = ? AND following_id = ?").bind(receiverId, senderId).first();
+        
+        if (follow1 && follow2) return jsonResponse({ success: true, canChat: true });
+
+        const request = await env.DB.prepare("SELECT id, status FROM chat_requests WHERE (sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?)").bind(senderId, receiverId, receiverId, senderId).first();
+        
+        if (request && request.status === 'accepted') return jsonResponse({ success: true, canChat: true });
+        if (request && request.status === 'pending') return jsonResponse({ success: true, canChat: false, status: 'pending' });
+        
+        return jsonResponse({ success: true, canChat: false, status: 'none' });
+      }
+
+      // ✅ NOUVEAU : Récupérer les demandes en attente
+      if (path.startsWith("/api/chat/requests/") && request.method === "GET") {
+        const userId = path.split("/")[4];
+        const { results } = await env.DB.prepare(`
+          SELECT cr.id, u.pseudo, u.avatar_url 
+          FROM chat_requests cr 
+          JOIN users u ON cr.sender_id = u.id 
+          WHERE cr.receiver_id = ? AND cr.status = 'pending'
+        `).bind(userId).all();
+        return jsonResponse({ success: true, requests: results });
+      }
+
+      // ✅ NOUVEAU : Récupérer la liste des conversations (Inbox)
+      if (path.startsWith("/api/inbox/") && request.method === "GET") {
+        const userId = path.split("/")[3];
+        const sql = `
+          SELECT m.*, u.pseudo as other_pseudo, u.avatar_url as other_avatar
+          FROM messages m
+          JOIN users u ON u.id = CASE WHEN m.sender_id = ? THEN m.receiver_id ELSE m.sender_id END
+          WHERE (m.sender_id = ? OR m.receiver_id = ?)
+          AND m.id IN (
+            SELECT MAX(id) FROM messages WHERE sender_id = ? OR receiver_id = ?
+            GROUP BY CASE WHEN sender_id = ? THEN receiver_id ELSE sender_id END
+          )
+          ORDER BY m.created_at DESC
+        `;
+        const { results } = await env.DB.prepare(sql).bind(userId, userId, userId, userId, userId, userId).all();
+        return jsonResponse({ success: true, conversations: results });
+      }
+
       // ==========================================
       // RECHERCHE, NOTIFICATIONS, CLASSEMENT
       // ==========================================
@@ -306,7 +365,6 @@ export default {
         return jsonResponse({ success: true, videos: results });
       }
       
-      // ✅ Notifications réelles
       if (path.startsWith("/api/notifications/") && request.method === "GET") {
         const userId = path.split("/")[3];
         const { results } = await env.DB.prepare(`
@@ -393,4 +451,4 @@ export class ChatRoom {
 
     return new Response(null, { status: 101, webSocket: client });
   }
-            }
+    }

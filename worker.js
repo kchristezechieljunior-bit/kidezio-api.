@@ -51,6 +51,17 @@ export default {
         return jsonResponse({ success: true, videos: results });
       }
 
+      // ✅ NOUVELLE ROUTE : Récupérer les vidéos par son
+      if (path === "/api/videos/sound" && request.method === "GET") {
+        const soundName = url.searchParams.get('music');
+        const userId = url.searchParams.get('userId') || '';
+        
+        const sql = "SELECT v.*, u.pseudo, u.avatar_url, (SELECT COUNT(*) FROM likes WHERE video_id = v.id) as likes_count, (SELECT COUNT(*) FROM comments WHERE video_id = v.id) as comments_count, (SELECT COUNT(*) FROM views WHERE video_id = v.id) as views_count, (SELECT COUNT(*) FROM likes WHERE video_id = v.id AND user_id = ?) as is_liked, (SELECT COUNT(*) FROM reposts WHERE video_id = v.id) as reposts_count, (SELECT COUNT(*) FROM favorites WHERE video_id = v.id AND user_id = ?) as is_favorited FROM videos v JOIN users u ON v.user_id = u.id WHERE v.music = ? AND v.deleted_at IS NULL ORDER BY v.created_at DESC LIMIT 50";
+        
+        const { results } = await env.DB.prepare(sql).bind(userId, userId, soundName).all();
+        return jsonResponse({ success: true, videos: results });
+      }
+
       if (path === "/api/video/delete" && request.method === "POST") {
         const { videoId, userId } = await request.json();
         await env.DB.prepare("UPDATE videos SET deleted_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?").bind(videoId, userId).run();
@@ -119,7 +130,7 @@ export default {
       }
 
       // ==========================================
-      // FOLLOWS & BLOCAGES (MIS À JOUR)
+      // FOLLOWS & BLOCAGES
       // ==========================================
       if (path === "/api/follow" && request.method === "POST") {
         const { followerId, followingId } = await request.json();
@@ -184,8 +195,18 @@ export default {
       if (path === "/api/like" && request.method === "POST") {
         const { userId, videoId } = await request.json();
         const existing = await env.DB.prepare("SELECT id FROM likes WHERE user_id = ? AND video_id = ?").bind(userId, videoId).first();
-        if (existing) { await env.DB.prepare("DELETE FROM likes WHERE id = ?").bind(existing.id).run(); return jsonResponse({ success: true, action: "unliked" }); }
-        else { await env.DB.prepare("INSERT INTO likes (id, user_id, video_id) VALUES (?, ?, ?)").bind(crypto.randomUUID(), userId, videoId).run(); return jsonResponse({ success: true, action: "liked" }); }
+        if (existing) { 
+          await env.DB.prepare("DELETE FROM likes WHERE id = ?").bind(existing.id).run(); 
+          return jsonResponse({ success: true, action: "unliked" }); 
+        } else { 
+          await env.DB.prepare("INSERT INTO likes (id, user_id, video_id) VALUES (?, ?, ?)").bind(crypto.randomUUID(), userId, videoId).run(); 
+          
+          const video = await env.DB.prepare("SELECT user_id FROM videos WHERE id = ?").bind(videoId).first();
+          if (video && video.user_id !== userId) {
+            await env.DB.prepare("INSERT INTO notifications (id, user_id, sender_id, type, video_id) VALUES (?, ?, ?, ?, ?)").bind(crypto.randomUUID(), video.user_id, userId, 'like', videoId).run();
+          }
+          return jsonResponse({ success: true, action: "liked" }); 
+        }
       }
       
       if (path === "/api/favorite" && request.method === "POST") {
@@ -210,7 +231,7 @@ export default {
       
       if (path.startsWith("/api/comments/") && request.method === "GET") {
         const videoId = path.split("/")[3];
-        const { results } = await env.DB.prepare("SELECT c.*, u.pseudo, u.avatar_url FROM comments c JOIN users u ON c.user_id = u.id WHERE c.video_id = ? ORDER BY c.created_at ASC").bind(videoId).all();
+        const { results } = await env.DB.prepare("SELECT c.*, u.pseudo, u.avatar_url, (SELECT COUNT(*) FROM comment_likes WHERE comment_id = c.id) as likes_count FROM comments c JOIN users u ON c.user_id = u.id WHERE c.video_id = ? ORDER BY c.created_at ASC").bind(videoId).all();
         return jsonResponse({ success: true, comments: results });
       }
       
@@ -218,10 +239,40 @@ export default {
         const { videoId, userId, text, parentId } = await request.json();
         const commentId = crypto.randomUUID();
         await env.DB.prepare("INSERT INTO comments (id, video_id, user_id, text, parent_id) VALUES (?, ?, ?, ?, ?)").bind(commentId, videoId, userId, text, parentId).run();
+        
+        const video = await env.DB.prepare("SELECT user_id FROM videos WHERE id = ?").bind(videoId).first();
+        if (video && video.user_id !== userId) {
+          await env.DB.prepare("INSERT INTO notifications (id, user_id, sender_id, type, video_id) VALUES (?, ?, ?, ?, ?)").bind(crypto.randomUUID(), video.user_id, userId, 'comment', videoId).run();
+        }
+        
         return jsonResponse({ success: true, id: commentId });
       }
 
-      // ==========================================
+      // ✅ NOUVEAU : Like d'un commentaire
+      if (path === "/api/comment/like" && request.method === "POST") {
+        const { userId, commentId } = await request.json();
+        const existing = await env.DB.prepare("SELECT id FROM comment_likes WHERE user_id = ? AND comment_id = ?").bind(userId, commentId).first();
+        if (existing) { 
+          await env.DB.prepare("DELETE FROM comment_likes WHERE id = ?").bind(existing.id).run(); 
+          return jsonResponse({ success: true, action: "unliked" }); 
+        } else { 
+          await env.DB.prepare("INSERT INTO comment_likes (id, user_id, comment_id) VALUES (?, ?, ?)").bind(crypto.randomUUID(), userId, commentId).run(); 
+          
+          const comment = await env.DB.prepare("SELECT user_id FROM comments WHERE id = ?").bind(commentId).first();
+          if (comment && comment.user_id !== userId) {
+            await env.DB.prepare("INSERT INTO notifications (id, user_id, sender_id, type, comment_id) VALUES (?, ?, ?, ?, ?)").bind(crypto.randomUUID(), comment.user_id, userId, 'comment_like', commentId).run();
+          }
+          return jsonResponse({ success: true, action: "liked" }); 
+        }
+      }
+
+      // ✅ NOUVEAU : Suppression d'un commentaire
+      if (path === "/api/comment/delete" && request.method === "POST") {
+        const { commentId, userId } = await request.json();
+        await env.DB.prepare("DELETE FROM comments WHERE id = ? AND user_id = ?").bind(commentId, userId).run();
+        return jsonResponse({ success: true });
+    }
+            // ==========================================
       // CHAT
       // ==========================================
       if (path.startsWith("/api/messages/") && request.method === "GET") {
@@ -246,8 +297,17 @@ export default {
         return jsonResponse({ success: true, videos: results });
       }
       
-      if (path === "/api/notifications" && request.method === "GET") {
-        return jsonResponse({ success: true, notifs: [] });
+      // ✅ NOUVEAU : Notifications réelles
+      if (path.startsWith("/api/notifications/") && request.method === "GET") {
+        const userId = path.split("/")[3];
+        const { results } = await env.DB.prepare(`
+          SELECT n.*, u.pseudo as sender_pseudo, u.avatar_url as sender_avatar 
+          FROM notifications n 
+          JOIN users u ON n.sender_id = u.id 
+          WHERE n.user_id = ? 
+          ORDER BY n.created_at DESC LIMIT 50
+        `).bind(userId).all();
+        return jsonResponse({ success: true, notifs: results });
       }
 
       if (path === "/api/leaderboard" && request.method === "GET") {

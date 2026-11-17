@@ -10,10 +10,11 @@ database_id = "6aea60ce-c62f-406f-9a5b-7643ed55b785"
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "kidezio-videos"
+
 [[durable_objects.bindings]]
 name = "CHAT_ROOM"
 class_name = "ChatRoom"
 
 [[migrations]]
 tag = "v1"
-new_sqlite_classes = ["ChatRoom"] # Utilise new_classes si tu n'utilises pas SQLite dans le DO
+new_sqlite_classes = ["ChatRoom"]

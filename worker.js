@@ -22,6 +22,15 @@ export default {
 
     try {
       // ==========================================
+      // WEBSOCKET (CHAT TEMPS RÉEL)
+      // ==========================================
+      if (path === "/websocket") {
+        const id = env.CHAT_ROOM.idFromName("global");
+        const stub = env.CHAT_ROOM.get(id);
+        return stub.fetch(request);
+      }
+
+      // ==========================================
       // AUTHENTIFICATION
       // ==========================================
       if (path === "/api/auth/signup" && request.method === "POST") {
@@ -51,7 +60,7 @@ export default {
         return jsonResponse({ success: true, videos: results });
       }
 
-      // ✅ NOUVELLE ROUTE : Récupérer les vidéos par son
+      // ✅ ROUTE : Récupérer les vidéos par son
       if (path === "/api/videos/sound" && request.method === "GET") {
         const soundName = url.searchParams.get('music');
         const userId = url.searchParams.get('userId') || '';
@@ -248,7 +257,7 @@ export default {
         return jsonResponse({ success: true, id: commentId });
       }
 
-      // ✅ NOUVEAU : Like d'un commentaire
+      // ✅ Like d'un commentaire
       if (path === "/api/comment/like" && request.method === "POST") {
         const { userId, commentId } = await request.json();
         const existing = await env.DB.prepare("SELECT id FROM comment_likes WHERE user_id = ? AND comment_id = ?").bind(userId, commentId).first();
@@ -266,12 +275,12 @@ export default {
         }
       }
 
-      // ✅ NOUVEAU : Suppression d'un commentaire
+      // ✅ Suppression d'un commentaire
       if (path === "/api/comment/delete" && request.method === "POST") {
         const { commentId, userId } = await request.json();
         await env.DB.prepare("DELETE FROM comments WHERE id = ? AND user_id = ?").bind(commentId, userId).run();
         return jsonResponse({ success: true });
-    }
+          }
             // ==========================================
       // CHAT
       // ==========================================
@@ -297,7 +306,7 @@ export default {
         return jsonResponse({ success: true, videos: results });
       }
       
-      // ✅ NOUVEAU : Notifications réelles
+      // ✅ Notifications réelles
       if (path.startsWith("/api/notifications/") && request.method === "GET") {
         const userId = path.split("/")[3];
         const { results } = await env.DB.prepare(`
@@ -350,3 +359,38 @@ export default {
     }
   },
 };
+
+// ==========================================
+// ✅ CLASSE CHATROOM POUR LE WEBSOCKET
+// ==========================================
+export class ChatRoom {
+  constructor(state, env) {
+    this.state = state;
+    this.sessions = new Set();
+  }
+
+  async fetch(request) {
+    const upgradeHeader = request.headers.get('Upgrade');
+    if (!upgradeHeader || upgradeHeader !== 'websocket') {
+      return new Response('Expected Upgrade: websocket', { status: 426 });
+    }
+
+    const pair = new WebSocketPair();
+    const [client, server] = Object.values(pair);
+    server.accept();
+    this.sessions.add(server);
+
+    server.addEventListener('message', (event) => {
+      const data = event.data;
+      this.sessions.forEach(session => {
+        try { session.send(data); } catch (e) {}
+      });
+    });
+
+    server.addEventListener('close', () => {
+      this.sessions.delete(server);
+    });
+
+    return new Response(null, { status: 101, webSocket: client });
+  }
+            }

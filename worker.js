@@ -133,9 +133,8 @@ export default {
         const sql = "SELECT v.*, (SELECT COUNT(*) FROM likes WHERE video_id = v.id) as likes_count, (SELECT COUNT(*) FROM comments WHERE video_id = v.id) as comments_count, (SELECT COUNT(*) FROM views WHERE video_id = v.id) as views_count FROM videos v WHERE v.user_id = ? AND v.deleted_at IS NOT NULL ORDER BY v.deleted_at DESC";
         const { results } = await env.DB.prepare(sql).bind(userId).all();
         return jsonResponse({ success: true, videos: results });
-      }
-
-      // ==========================================
+        }
+            // ==========================================
       // FOLLOWS & BLOCAGES
       // ==========================================
       if (path === "/api/follow" && request.method === "POST") {
@@ -178,6 +177,7 @@ export default {
         }
         
         query += " ORDER BY f.created_at DESC LIMIT 50";
+
         const { results } = await env.DB.prepare(query).bind(...bindings).all();
         return jsonResponse({ success: true, users: results });
       }
@@ -205,6 +205,7 @@ export default {
           return jsonResponse({ success: true, action: "unliked" }); 
         } else { 
           await env.DB.prepare("INSERT INTO likes (id, user_id, video_id) VALUES (?, ?, ?)").bind(crypto.randomUUID(), userId, videoId).run(); 
+          
           const video = await env.DB.prepare("SELECT user_id FROM videos WHERE id = ?").bind(videoId).first();
           if (video && video.user_id !== userId) {
             await env.DB.prepare("INSERT INTO notifications (id, user_id, sender_id, type, video_id) VALUES (?, ?, ?, ?, ?)").bind(crypto.randomUUID(), video.user_id, userId, 'like', videoId).run();
@@ -243,10 +244,12 @@ export default {
         const { videoId, userId, text, parentId } = await request.json();
         const commentId = crypto.randomUUID();
         await env.DB.prepare("INSERT INTO comments (id, video_id, user_id, text, parent_id) VALUES (?, ?, ?, ?, ?)").bind(commentId, videoId, userId, text, parentId).run();
+        
         const video = await env.DB.prepare("SELECT user_id FROM videos WHERE id = ?").bind(videoId).first();
         if (video && video.user_id !== userId) {
           await env.DB.prepare("INSERT INTO notifications (id, user_id, sender_id, type, video_id) VALUES (?, ?, ?, ?, ?)").bind(crypto.randomUUID(), video.user_id, userId, 'comment', videoId).run();
         }
+        
         return jsonResponse({ success: true, id: commentId });
       }
 
@@ -258,6 +261,7 @@ export default {
           return jsonResponse({ success: true, action: "unliked" }); 
         } else { 
           await env.DB.prepare("INSERT INTO comment_likes (id, user_id, comment_id) VALUES (?, ?, ?)").bind(crypto.randomUUID(), userId, commentId).run(); 
+          
           const comment = await env.DB.prepare("SELECT user_id FROM comments WHERE id = ?").bind(commentId).first();
           if (comment && comment.user_id !== userId) {
             await env.DB.prepare("INSERT INTO notifications (id, user_id, sender_id, type, comment_id) VALUES (?, ?, ?, ?, ?)").bind(crypto.randomUUID(), comment.user_id, userId, 'comment_like', commentId).run();
@@ -270,8 +274,9 @@ export default {
         const { commentId, userId } = await request.json();
         await env.DB.prepare("DELETE FROM comments WHERE id = ? AND user_id = ?").bind(commentId, userId).run();
         return jsonResponse({ success: true });
-          }
-            // ==========================================
+      }
+
+      // ==========================================
       // CHAT & DEMANDES DE DISCUSSION
       // ==========================================
       if (path.startsWith("/api/messages/") && request.method === "GET") {
@@ -287,28 +292,24 @@ export default {
         return jsonResponse({ success: true });
       }
 
-      // ✅ NOUVEAU : Envoyer une demande de discussion
       if (path === "/api/chat/request" && request.method === "POST") {
         const { senderId, receiverId } = await request.json();
         await env.DB.prepare("INSERT OR IGNORE INTO chat_requests (id, sender_id, receiver_id) VALUES (?, ?, ?)").bind(crypto.randomUUID(), senderId, receiverId).run();
         return jsonResponse({ success: true });
       }
 
-      // ✅ NOUVEAU : Accepter une demande de discussion
       if (path === "/api/chat/accept" && request.method === "POST") {
         const { requestId } = await request.json();
         await env.DB.prepare("UPDATE chat_requests SET status = 'accepted' WHERE id = ?").bind(requestId).run();
         return jsonResponse({ success: true });
       }
 
-      // ✅ NOUVEAU : Ignorer (supprimer) une demande de discussion
       if (path === "/api/chat/ignore" && request.method === "POST") {
         const { requestId } = await request.json();
         await env.DB.prepare("DELETE FROM chat_requests WHERE id = ?").bind(requestId).run();
         return jsonResponse({ success: true });
       }
 
-      // ✅ NOUVEAU : Vérifier les règles de discussion
       if (path === "/api/chat/check" && request.method === "GET") {
         const senderId = url.searchParams.get('senderId');
         const receiverId = url.searchParams.get('receiverId');
@@ -326,7 +327,6 @@ export default {
         return jsonResponse({ success: true, canChat: false, status: 'none' });
       }
 
-      // ✅ NOUVEAU : Récupérer les demandes en attente
       if (path.startsWith("/api/chat/requests/") && request.method === "GET") {
         const userId = path.split("/")[4];
         const { results } = await env.DB.prepare(`
@@ -338,7 +338,6 @@ export default {
         return jsonResponse({ success: true, requests: results });
       }
 
-      // ✅ NOUVEAU : Récupérer la liste des conversations (Inbox)
       if (path.startsWith("/api/inbox/") && request.method === "GET") {
         const userId = path.split("/")[3];
         const sql = `
@@ -383,7 +382,7 @@ export default {
       }
 
       // ==========================================
-      // UPLOAD
+      // UPLOAD (VIDÉO + MINIATURE)
       // ==========================================
       if (path === "/api/upload-avatar" && request.method === "POST") {
         const formData = await request.formData();
@@ -396,18 +395,33 @@ export default {
         return jsonResponse({ success: true, url: publicUrl });
       }
 
+      // ✅ MISE À JOUR DE L'UPLOAD POUR GÉRER LA MINIATURE
       if (path === "/api/upload" && request.method === "POST") {
         const formData = await request.formData();
         const file = formData.get("video");
+        const thumbFile = formData.get("thumbnail");
         const description = formData.get("description") || "";
         const music = formData.get("music") || "Son original";
         const userId = formData.get("userId");
-        const fileName = "videos/" + userId + "/" + Date.now() + "-" + file.name.replace(/[^a-zA-Z0-9.]/g, '');
-        await env.BUCKET.put(fileName, file.stream(), { httpMetadata: { contentType: file.type } });
-        const publicUrl = "https://pub-3219a17171b24ba58cf1972fa7300c60.r2.dev/" + fileName;
+        
+        // 1. Upload de la vidéo
+        const videoFileName = "videos/" + userId + "/" + Date.now() + "-" + file.name.replace(/[^a-zA-Z0-9.]/g, '');
+        await env.BUCKET.put(videoFileName, file.stream(), { httpMetadata: { contentType: file.type } });
+        const publicVideoUrl = "https://pub-3219a17171b24ba58cf1972fa7300c60.r2.dev/" + videoFileName;
+        
+        // 2. Upload de la miniature (si elle existe)
+        let publicThumbUrl = null;
+        if (thumbFile) {
+            const thumbFileName = "thumbnails/" + userId + "/" + Date.now() + "-thumb.jpg";
+            await env.BUCKET.put(thumbFileName, thumbFile.stream(), { httpMetadata: { contentType: "image/jpeg" } });
+            publicThumbUrl = "https://pub-3219a17171b24ba58cf1972fa7300c60.r2.dev/" + thumbFileName;
+        }
+
+        // 3. Enregistrement en base de données
         const videoId = crypto.randomUUID();
-        await env.DB.prepare("INSERT INTO videos (id, user_id, video_url, description, music) VALUES (?, ?, ?, ?, ?)").bind(videoId, userId, publicUrl, description, music).run();
-        return jsonResponse({ success: true, videoId, url: publicUrl });
+        await env.DB.prepare("INSERT INTO videos (id, user_id, video_url, description, music, thumbnail_url) VALUES (?, ?, ?, ?, ?, ?)").bind(videoId, userId, publicVideoUrl, description, music, publicThumbUrl).run();
+        
+        return jsonResponse({ success: true, videoId, url: publicVideoUrl, thumbnail: publicThumbUrl });
       }
 
       return jsonResponse({ error: "Route introuvable" }, 404);
@@ -451,4 +465,4 @@ export class ChatRoom {
 
     return new Response(null, { status: 101, webSocket: client });
   }
-    }
+                             }
